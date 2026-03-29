@@ -1,12 +1,13 @@
 #include <Wire.h>
 #include <Adafruit_AS7341.h>
+#include "app/as7341_api.h"
 
 Adafruit_AS7341 as7341;
 
 bool initAS7341(void) {
   if (!as7341.begin()){
     Serial.println("Could not find AS7341");
-    while (1) { delay(10); }
+    return false;
   } else {
     Serial.println("AS7341 Found!");
     as7341.setATIME(100);
@@ -50,6 +51,10 @@ bool as7341_setGain(as7341_gain_t gain) {
 
 
 bool as7341_setLEDCurrent(uint16_t led_current_ma) {
+  if (!as7341_available) {
+    Serial.println("as7341 not available");
+    return false;
+  }
   bool enable_led = false;
   uint8_t requested_current = led_current_ma;
 
@@ -95,6 +100,10 @@ bool as7341_setLEDCurrent(uint16_t led_current_ma) {
 }
 
 bool as7341_readAll(uint16_t readings[12]) {
+    if (!as7341_available) {
+      Serial.println("as7341 not available");
+      return false;
+    }
     // Read all channels and print them in a JSON-like format
   if (!as7341.readAllChannels(readings)) {
     Serial.println("Error reading all channels!");
@@ -130,12 +139,20 @@ bool as7341_readAll(uint16_t readings[12]) {
 
 
 void cmd_as7341_read(){
+    if (!as7341_available) {
+      Serial.println("as7341 not available");
+      return;
+    }
     Serial.print(F("\"as7341\":")); 
     uint16_t reads[12];
     as7341_readAll(reads);
 }
 
 void cmd_read_as7341_flash(int arg){
+    if (!as7341_available) {
+      Serial.println("as7341 not available");
+      return;
+    }
     // print the AS7341 read with LED off and on, and the difference.
     int ledCurrent = 10; // default LED current in mA
     if (arg >= 0) {

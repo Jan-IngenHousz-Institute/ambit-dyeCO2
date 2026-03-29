@@ -2,10 +2,6 @@
 #include <Arduino.h>
 
 void i2c_scan() {
-  
-  Wire.begin(18, 19);
-  Wire.setClock(100000);  // keep it slow while debugging
-
   Serial.println("Scanning...");
   for (uint8_t addr = 1; addr < 127; addr++) {
     Wire.beginTransmission(addr);

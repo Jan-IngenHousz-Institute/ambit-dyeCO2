@@ -4,6 +4,8 @@
 #include "app/bme68x_api.h"
 #include "app/as7341_api.h"
 
+bool bme_available = false;
+bool as7341_available = false;
 
 String line;
 enum class RxMode { UNKNOWN, LINE, JSON };
@@ -27,17 +29,19 @@ void setup() {
   
   Serial.begin(115200);
 
+  Wire.begin(3, 4);
+
   // BME68x initialization
-  bool bme_ok = initBME();
-  if (!bme_ok) {
+  bme_available = initBME();
+  if (!bme_available) {
     Serial.println("BME68x initialization failed. Check connections and I2C address.");
   } else {
     Serial.println("BME68x initialized successfully.");
   }
 
   // AS7341 initialization
-  bool as7341_ok = initAS7341();
-  if (!as7341_ok) {
+  as7341_available = initAS7341();
+  if (!as7341_available) {
     Serial.println("AS7341 initialization failed. Check connections and I2C address.");
   } else {
     Serial.println("AS7341 initialized successfully.");

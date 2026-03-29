@@ -1,4 +1,7 @@
+#pragma once
 #include <Adafruit_AS7341.h>
+
+extern bool as7341_available;
 
 bool initAS7341();
 uint8_t as7341_setAtIME(uint8_t atime_value);

@@ -1,5 +1,6 @@
 #include <Wire.h>
 #include <bme68xLibrary.h>
+#include "app/bme68x_api.h"
 
 
 
@@ -33,11 +34,7 @@ static void printBMEField(const bme68xData &d)
 #endif
 }
 
-#define I2C_SDA 3
-#define I2C_SCL 4
-
 bool initBME(void) {
-  Wire.begin(I2C_SDA, I2C_SCL);
   bme.begin(BME68X_ADDR, Wire);
   if (bme.checkStatus() != 0) {   
     Serial.print("BME68x init failed with status string: ");
@@ -54,6 +51,10 @@ bool initBME(void) {
 
 
 bool bme_read(void){
+    if (!bme_available) {
+      Serial.println("bme68x not available");
+      return false;
+    }
     bme.setOpMode(BME68X_FORCED_MODE);
     // Wait long enough for measurement + heater
     uint32_t dur_us = bme.getMeasDur(BME68X_FORCED_MODE);
@@ -75,6 +76,10 @@ bool bme_read(void){
 }
 
 void cmd_bme_read(){
+    if (!bme_available) {
+      Serial.println("bme68x not available");
+      return;
+    }
     Serial.print(F("\"bme_read\":")); 
     bme_read();
 }
