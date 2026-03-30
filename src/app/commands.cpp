@@ -1,8 +1,8 @@
 #include <Wire.h>
 #include "app/commands.h"
 #include "app/bme68x_api.h"
-#include "app/as7341_api.h"
 #include "app/debug_api.h"
+#include "app/spectrometer_api.h"
 
 #include <ArduinoJson.h>
 
@@ -192,7 +192,7 @@ void handleCommandText(const String &cmd) {
     i2c_scan();
 
   } else if (cmd == "as7341_read") {
-    cmd_as7341_read();
+    spectrometer_read();
 
   } else if (cmd.startsWith("set_led")) {
     int ledCurrent = 10; // default LED current in mA
@@ -202,9 +202,7 @@ void handleCommandText(const String &cmd) {
       arg.trim();
       ledCurrent = arg.toInt();
     }
-    Serial.print(F("set_led:"));
-    Serial.println(ledCurrent);
-    as7341_setLEDCurrent(ledCurrent);
+    spectrometer_set_led_current(static_cast<uint16_t>(ledCurrent));
 
   } else if (cmd.startsWith("as7341_read_flash")) {
     // print the AS7341 read with LED off and on, and the difference.
@@ -217,7 +215,7 @@ void handleCommandText(const String &cmd) {
       ledCurrent = arg.toInt();
     }
 
-    cmd_read_as7341_flash(ledCurrent);
+    spectrometer_read_flash(static_cast<uint16_t>(ledCurrent));
   
   } else if (cmd.length() > 0) {
     Serial.println(F("unknown command"));

@@ -6,14 +6,13 @@ Adafruit_AS7341 as7341;
 
 bool initAS7341(void) {
   if (!as7341.begin()){
-    Serial.println("Could not find AS7341");
     return false;
-  } else {
-    Serial.println("AS7341 Found!");
-    as7341.setATIME(100);
-    as7341.setASTEP(999);
-    as7341.setGain(AS7341_GAIN_4X);
   }
+
+  as7341.setATIME(100);
+  as7341.setASTEP(999);
+  as7341.setGain(AS7341_GAIN_4X);
+
   return true;
 }
 
