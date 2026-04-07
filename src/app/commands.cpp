@@ -3,6 +3,7 @@
 #include "app/bme68x_api.h"
 #include "app/debug_api.h"
 #include "app/spectrometer_api.h"
+#include "app/as7341_api.h"
 
 #include <ArduinoJson.h>
 
@@ -180,18 +181,17 @@ void handleCommandText(const String &cmd) {
   if (cmd == "hello") {
     Serial.println(F("Hello CO2 meter ready"));
     
-
   } else if (cmd == "battery") {
     Serial.println(
-        F("\"battery\":0")); // Placeholder, implement actual battery reading if available
+        F("\"battery\":\"NaN\"")); // Placeholder, implement actual battery reading if available
 
-  } else if (cmd == "bme_read") {
+  } else if (cmd == "env") {
     cmd_bme_read();
 
   } else if (cmd == "i2c_scan") {
     i2c_scan();
 
-  } else if (cmd == "as7341_read") {
+  } else if (cmd == "spec") {
     spectrometer_read();
 
   } else if (cmd.startsWith("set_led")) {
@@ -204,7 +204,7 @@ void handleCommandText(const String &cmd) {
     }
     spectrometer_set_led_current(static_cast<uint16_t>(ledCurrent));
 
-  } else if (cmd.startsWith("as7341_read_flash")) {
+  } else if (cmd.startsWith("spec_flash")) {
     // print the AS7341 read with LED off and on, and the difference.
     int ledCurrent = 10; // default LED current in mA
     int comma = cmd.indexOf(',');
@@ -217,8 +217,36 @@ void handleCommandText(const String &cmd) {
 
     spectrometer_read_flash(static_cast<uint16_t>(ledCurrent));
   
+  } else if (cmd.startsWith("spec_set_atime")) {
+    int comma = cmd.indexOf(',');
+    const char *arg = (comma > 0) ? cmd.c_str() + comma + 1 : "";
+    cmd_spectrometer_set_atime(comma > 0 ? 1 : 0, &arg);
+
+  } else if (cmd.startsWith("spec_set_astep")) {
+    int comma = cmd.indexOf(',');
+    const char *arg = (comma > 0) ? cmd.c_str() + comma + 1 : "";
+    cmd_spectrometer_set_astep(comma > 0 ? 1 : 0, &arg);
+
+  } else if (cmd.startsWith("spec_set_gain")) {
+    int comma = cmd.indexOf(',');
+    const char *arg = (comma > 0) ? cmd.c_str() + comma + 1 : "";
+    cmd_spectrometer_set_gain(comma > 0 ? 1 : 0, &arg);
+
+  } else if (cmd == "spec_status") {
+    cmd_spectrometer_status();
+
+  } else if (cmd == "bme_status") {
+    cmd_bme_status();
+
+  } else if (cmd == "status") {
+    cmd_spectrometer_status();
+    cmd_bme_status();
+
+  } else if (cmd == "reboot") {
+    cmd_reboot();
+
   } else if (cmd.length() > 0) {
     Serial.println(F("unknown command"));
-     
+
   }
 }

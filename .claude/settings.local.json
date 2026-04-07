@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://raw.githubusercontent.com/adafruit/Adafruit_AS7343/main/Adafruit_AS7343.h\")",
+      "Bash(py -c ':*)",
+      "Bash(python main.py)",
+      "Bash(echo \"EXIT_CODE=$?\")",
+      "WebSearch",
+      "Bash(python -m platformio run)",
+      "Bash(pio run:*)",
+      "Bash(where platformio:*)",
+      "Bash(where pio:*)",
+      "Read(//c/Users/LudovicoCaracciolo/.platformio/penv/Scripts/**)",
+      "WebFetch(domain:look.ams-osram.com)",
+      "WebFetch(domain:www.mouser.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

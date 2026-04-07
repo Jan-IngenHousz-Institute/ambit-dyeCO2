@@ -94,7 +94,7 @@ That is not sufficient for AS7343 support because:
   - if that on-demand retry still sees `0x39` with no supported ID match, set `spectrometer_model = SpectrometerModel::UnknownAt0x39` and return `{"spectrometer":{"error":"unsupported_device_at_0x39"}}`
   - if `spectrometer_model == SpectrometerModel::UnknownAt0x39`, subsequent spectrometer commands return `{"spectrometer":{"error":"unsupported_device_at_0x39"}}`
   - use the same complete JSON object shape in both LINE mode and JSON/openJII mode; do not emit free-text spectrometer errors
-- **AS7343 bank-switch write risk:** the AS7343 chip ID read requires writing to register `0xBF` (bank-select bit in CFG0) before the device identity is confirmed; if the device is actually an AS7341, this write goes to whatever AS7341 has at `0xBF`; the implementation restores the original value, but the write-then-restore must be verified as safe against the AS7341 register map; confirm that AS7341 register `0xBF` is reserved or harmless-on-write before freezing this detection order — if it is not safe, probe AS7341 WHOAMI first (read-only, no writes required) and AS7343 second
+- **AS7343 bank-switch write — verified safe:** the AS7343 chip ID read writes to register `0xBF` (CFG0 bank-select) before identity is confirmed; the Adafruit AS7341 library header lists every defined AS7341 register and `0xBF` does not appear — it falls in an undefined/reserved gap between `0xBE` (GPIO2) and `0xCA` (ASTEP_L); writing to a reserved register and restoring the prior value is safe; the AS7343-first detection order is frozen
 
 ### Step 0.3 - Use separate backends, not a forced shared driver
 - **AS7341 backend:** continue using `Adafruit_AS7341`
@@ -304,6 +304,54 @@ That is not sufficient for AS7343 support because:
 - Diff is computed per named channel: `diff[name] = lit[name] > dark[name] ? lit[name] - dark[name] : 0`
 - Keep `read_spectro_flash` as a compatibility alias for the canonical `spectrometer_read_flash`
 
+### Step 2.7 - Add diagnostic CLI commands
+- **Files:** `src/app/spectrometer_api.cpp`, `include/app/spectrometer_api.h`, `src/app/bme68x_api.cpp`, `include/app/bme68x_api.h`, `src/app/debug_api.cpp`, `include/app/debug_api.h`, `src/app/commands.cpp`
+
+#### `spectrometer_status`
+- Reports current spectrometer model, availability, and active configuration
+- **Output when spectrometer is available and fully configured:**
+  ```
+  {"spectrometer_status":{"model":"AS7341","available":true,"atime":NNN,"astep":NNN,"gain":N}}
+  ```
+- **Output when detected but commands not yet implemented (AS7343 with Phase 0.4 guard active):**
+  ```
+  {"spectrometer_status":{"model":"AS7343","available":false}}
+  ```
+- **Output when not available:**
+  ```
+  {"spectrometer_status":{"model":"None","available":false}}
+  ```
+- Emit `atime`, `astep`, and `gain` fields only when `spectrometer_available == true`; omit them in all unavailable states to keep the output unambiguous
+- `gain` is emitted as an integer (the enum ordinal stored in the device register); this is a debug command — raw values are acceptable
+- Add `as7341_gain_t as7341_getGain()` to `as7341_api.cpp` and `as7341_api.h` using `as7341.getGain()`
+- When `spectrometer_model == SpectrometerModel::AS7343` and Phase 2.2 is not yet implemented, emit only `model` and `available`; once Phase 2.2 adds AS7343 getters (`as7343_getAtIME()`, `as7343_getAStep()`, `as7343_getGain()`), add those fields too
+- Add `void cmd_spectrometer_status();` to `spectrometer_api.h`; implement in `spectrometer_api.cpp`
+
+#### `bme_status`
+- Reports BME availability only; does not perform a measurement
+- **Output:**
+  ```
+  {"bme_status":{"available":true}}
+  ```
+  or
+  ```
+  {"bme_status":{"available":false}}
+  ```
+- Add `void cmd_bme_status();` to `bme68x_api.h`; implement in `bme68x_api.cpp` reading `bme_available`
+
+#### `reboot`
+- Initiates a software reset of the ESP32
+- **Output before reset:**
+  ```
+  {"reboot":"initiated"}
+  ```
+- Implementation: print the JSON object, call `Serial.flush()`, then `esp_restart()` (from `<esp_system.h>`)
+- Add `void cmd_reboot();` to `debug_api.h`; implement in `debug_api.cpp`
+
+#### Wiring for Phase 2
+- For Phase 2 (before the dispatch-table migration in Step 3.1): add all three commands to the if-else chain in `handleCommandText()` in `src/app/commands.cpp`
+- Step 3.1 will move them into `kCmds[]` as canonical entries; no aliases needed for debug commands
+
 ### >>> HARDWARE TEST CHECKPOINT 2 <<<
 - [ ] On AS7341 hardware, generic spectrometer read returns AS7341 model plus valid channels
 - [ ] On AS7343 hardware, generic spectrometer read returns AS7343 model plus valid channels
@@ -313,6 +361,11 @@ That is not sufficient for AS7343 support because:
 - [ ] Flash-read dark / lit / diff works on both sensor variants; output is a single valid JSON object with `spectrometer_dark`, `spectrometer_lit`, and `spectrometer_diff` keys each containing `model` and `channels`
 - [ ] AS7343 timeout path clears `SP_EN` and the next measurement can still succeed
 - [ ] AS7343 saturated or invalid `2xVIS` samples are excluded from `clear` averaging; if all are invalid, the sample fails cleanly
+- [ ] `spectrometer_status` on AS7341 returns `available:true` with `atime`, `astep`, and `gain` matching the values set in `initAS7341()`
+- [ ] `spectrometer_status` on AS7343 after Phase 2.2 returns `available:true` with `atime`, `astep`, and `gain` matching AS7343 init values
+- [ ] `spectrometer_status` with no spectrometer fitted returns `{"spectrometer_status":{"model":"None","available":false}}`
+- [ ] `bme_status` returns `available:true` when BME is fitted; `available:false` when not
+- [ ] `reboot` emits `{"reboot":"initiated"}`, device restarts, boot banner reprints on reconnect
 
 ---
 
@@ -338,6 +391,9 @@ That is not sufficient for AS7343 support because:
   - `{"i2c_scan", cmd_i2c_scan}`
   - `{"hello", cmd_hello}`
   - `{"battery", cmd_battery}`
+  - `{"spectrometer_status", cmd_spectrometer_status}`
+  - `{"bme_status", cmd_bme_status}`
+  - `{"reboot", cmd_reboot}`
   - `{"read_spectro", cmd_spectrometer_read}` — compatibility alias
   - `{"read_spectro_flash", cmd_spectrometer_read_flash}` — compatibility alias
   - `{"set_led", cmd_spectrometer_set_led}` — compatibility alias

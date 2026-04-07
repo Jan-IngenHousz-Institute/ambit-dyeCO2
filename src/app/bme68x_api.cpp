@@ -80,6 +80,12 @@ void cmd_bme_read(){
       Serial.println("bme68x not available");
       return;
     }
-    Serial.print(F("\"bme_read\":")); 
+    Serial.print(F("\"bme_read\":"));
     bme_read();
+}
+
+void cmd_bme_status() {
+  Serial.print(F("{\"bme_status\":{\"available\":"));
+  Serial.print(bme_available ? F("true") : F("false"));
+  Serial.println(F("}}"));
 }

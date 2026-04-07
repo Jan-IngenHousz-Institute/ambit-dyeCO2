@@ -2,20 +2,78 @@
 #include <Adafruit_AS7341.h>
 #include "app/as7341_api.h"
 
-Adafruit_AS7341 as7341;
+namespace {
 
-bool initAS7341(void) {
-  if (!as7341.begin()){
+constexpr uint8_t kAs7341I2cAddress  = 0x39;
+constexpr uint8_t kAs7341WhoamiReg   = 0x92;
+// Chip ID check: (raw & 0xFC) == (0x09 << 2) == 0x24
+constexpr uint8_t kAs7341ChipIdMask    = 0xFC;
+constexpr uint8_t kAs7341ChipIdMasked  = 0x24;
+
+// Adafruit channel index -> SpectrometerResult.channels[] index mapping.
+// Indices 4 and 5 of the Adafruit array are SMUX pass-1 intermediates and must
+// be skipped.  The 10 remaining channels map in order:
+//   Adafruit[0..3]  -> channels[0..3]  (f1_415..f4_515)
+//   Adafruit[6..11] -> channels[4..9]  (f5_555..nir)
+constexpr uint8_t kAdafruitLen = 12;
+constexpr uint8_t kResultLen   = 10;
+
+} // namespace
+
+static Adafruit_AS7341 as7341;
+
+bool initAS7341() {
+  if (!as7341.begin()) {
     return false;
   }
-
   as7341.setATIME(100);
   as7341.setASTEP(999);
-  as7341.setGain(AS7341_GAIN_4X);
-
+  as7341.setGain(AS7341_GAIN_16X);
   return true;
 }
 
+bool as7341_readAndValidateChipId(uint8_t *raw_out) {
+  Wire.beginTransmission(kAs7341I2cAddress);
+  Wire.write(kAs7341WhoamiReg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(static_cast<int>(kAs7341I2cAddress), 1) != 1) {
+    return false;
+  }
+  const uint8_t raw = Wire.read();
+  if (raw_out) {
+    *raw_out = raw;
+  }
+  return (raw & kAs7341ChipIdMask) == kAs7341ChipIdMasked;
+}
+
+bool as7341_readInto(SpectrometerResult *out) {
+  if (!out) {
+    return false;
+  }
+  uint16_t raw[kAdafruitLen];
+  if (!as7341.readAllChannels(raw)) {
+    return false;
+  }
+  out->model         = SpectrometerModel::AS7341;
+  out->channel_count = kResultLen;
+  out->sat_mask      = 0;
+  // First SMUX pass: Adafruit[0..3] -> channels[0..3]
+  out->channels[0] = raw[0];
+  out->channels[1] = raw[1];
+  out->channels[2] = raw[2];
+  out->channels[3] = raw[3];
+  // raw[4] and raw[5] are SMUX pass-1 clear/NIR intermediates — skipped
+  // Second SMUX pass: Adafruit[6..11] -> channels[4..9]
+  out->channels[4] = raw[6];
+  out->channels[5] = raw[7];
+  out->channels[6] = raw[8];
+  out->channels[7] = raw[9];
+  out->channels[8] = raw[10];
+  out->channels[9] = raw[11];
+  return true;
+}
 
 uint8_t as7341_setAtIME(uint8_t atime_value) {
   return as7341.setATIME(atime_value);
@@ -33,167 +91,36 @@ uint16_t as7341_getAStep() {
   return as7341.getASTEP();
 }
 
-
 bool as7341_setGain(as7341_gain_t gain) {
   if (!as7341.setGain(gain)) {
-    Serial.println("AS7341: setGain failed");
     return false;
   }
-
-  if (as7341.getGain() != gain) {
-    Serial.println("AS7341: gain readback mismatch");
-    return false;
-  }
-
-  return true;
+  return as7341.getGain() == gain;
 }
 
+uint8_t as7341_getGain() {
+  return static_cast<uint8_t>(as7341.getGain());
+}
 
-bool as7341_setLEDCurrent(uint16_t led_current_ma) {
-  if (!as7341_available) {
-    Serial.println("as7341 not available");
-    return false;
+// Returns the quantized actual LED current in mA, 0 if disabled, 0xFFFF on error.
+uint16_t as7341_setLEDCurrent(uint16_t led_current_ma) {
+  if (led_current_ma == 0) {
+    as7341.enableLED(false);
+    return 0;
   }
-  bool enable_led = false;
-  uint8_t requested_current = led_current_ma;
 
-  if (led_current_ma > 20) {
-    Serial.println("AS7341: LED current must be <= 20 mA");
-    led_current_ma = 20; // Cap to max 
-  } else if (led_current_ma == 0) {
-    enable_led = false; // if 0 mA requested, disable LED
-  } else {
-    enable_led = true; // Enable LED for any non-zero current
-  }
-  
   if (!as7341.setLEDCurrent(led_current_ma)) {
-    Serial.println("AS7341: setLEDCurrent failed");
-    return false;
-  } 
-
-  // Normalize requested current to the value actually representable by the device
-  // Adafruit AS7341 uses 4mA minimum and 2mA quantization steps.
-  uint16_t normalized_current_ma = led_current_ma;
-  if (normalized_current_ma < 4) {
-    normalized_current_ma = 4;
-  }
-  normalized_current_ma = 4 + (((normalized_current_ma - 4) / 2) * 2);
- 
-  if (as7341.getLEDCurrent() != normalized_current_ma) {
-    Serial.println("AS7341: LED current readback mismatch");
-    if (requested_current != led_current_ma) {
-      Serial.print("AS7341: requested current: ");
-      Serial.print(requested_current);
-      Serial.print("mA, normalized request: ");
-      Serial.print(normalized_current_ma);
-      Serial.print("mA, readback: ");
-      Serial.print(as7341.getLEDCurrent());
-      Serial.println("mA");
-    }
-    return false;
-  }
-  
-  as7341.enableLED(enable_led); // switch LED on
-
-  return true;
-}
-
-bool as7341_readAll(uint16_t readings[12]) {
-    if (!as7341_available) {
-      Serial.println("as7341 not available");
-      return false;
-    }
-    // Read all channels and print them in a JSON-like format
-  if (!as7341.readAllChannels(readings)) {
-    Serial.println("Error reading all channels!");
-    return false;
+    return 0xFFFF;
   }
 
-  Serial.print("{\"415nm\":");
-  Serial.print(readings[0]);
-  Serial.print(",\"445nm\":");
-  Serial.print(readings[1]);
-  Serial.print(",\"480nm\":");
-  Serial.print(readings[2]);
-  Serial.print(",\"515nm\":");
-  Serial.print(readings[3]);
-  Serial.print(",\"555nm\":");
-  Serial.print(readings[6]);
-  Serial.print(",\"590nm\":");
-  Serial.print(readings[7]);
-  Serial.print(",\"630nm\":");
-  Serial.print(readings[8]);
-  Serial.print(",\"680nm\":");
-  Serial.print(readings[9]);
-  Serial.print(",\"Clear\":");
-  Serial.print(readings[10]);
-  Serial.print(",\"NIR\":");
-  Serial.print(readings[11]);
-  Serial.print("}");
-  Serial.println();
+  // Quantize to device resolution: 4 mA minimum, 2 mA steps.
+  uint16_t normalized = led_current_ma < 4 ? 4 : led_current_ma;
+  normalized = 4 + (((normalized - 4) / 2) * 2);
 
-  return true;
-}
+  if (as7341.getLEDCurrent() != normalized) {
+    return 0xFFFF;
+  }
 
-
-
-void cmd_as7341_read(){
-    if (!as7341_available) {
-      Serial.println("as7341 not available");
-      return;
-    }
-    Serial.print(F("\"as7341\":")); 
-    uint16_t reads[12];
-    as7341_readAll(reads);
-}
-
-void cmd_read_as7341_flash(int arg){
-    if (!as7341_available) {
-      Serial.println("as7341 not available");
-      return;
-    }
-    // print the AS7341 read with LED off and on, and the difference.
-    int ledCurrent = 10; // default LED current in mA
-    if (arg >= 0) {
-      ledCurrent = arg;
-    }
-
-    Serial.print(F("\"as7341_dark\":")); 
-    uint16_t drk[12];
-    uint16_t lit[12];
-    uint16_t dif[12] = {0};
-    as7341_readAll(drk);
-    as7341_setLEDCurrent(ledCurrent); 
-    Serial.print(F(",\"as7341_lit\":")); 
-    as7341_readAll(lit);
-    as7341_setLEDCurrent(0); 
-    Serial.print(F(",\"as7341_dif\":")); 
-  
-    for (int i = 0; i < 12; i++) {
-      dif[i] = lit[i] > drk[i] ? lit[i] - drk[i] : 0;
-    }
-    
-    Serial.print("{\"415nm\":");
-    Serial.print(dif[0]);
-    Serial.print(",\"445nm\":");
-    Serial.print(dif[1]);
-    Serial.print(",\"480nm\":");
-    Serial.print(dif[2]);
-    Serial.print(",\"515nm\":");
-    Serial.print(dif[3]);
-    Serial.print(",\"555nm\":");
-    Serial.print(dif[6]);
-    Serial.print(",\"590nm\":");
-    Serial.print(dif[7]);
-    Serial.print(",\"630nm\":");
-    Serial.print(dif[8]);
-    Serial.print(",\"680nm\":");
-    Serial.print(dif[9]);
-    Serial.print(",\"Clear\":");
-    Serial.print(dif[10]);
-    Serial.print(",\"NIR\":");
-    Serial.print(dif[11]);
-    Serial.println("}");
-    
-
+  as7341.enableLED(true);
+  return normalized;
 }
