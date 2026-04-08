@@ -78,14 +78,18 @@ AS7343_CHANNELS = [
 
 # Human-readable display names for legend
 _CHANNEL_DISPLAY = {
+    # AS7341
     "f1_415": "F1 415nm", "f2_445": "F2 445nm", "f3_480": "F3 480nm",
-    "f4_515": "F4 515nm", "f5_555": "F5 555nm", "f6_590": "F6 590nm",
+    "f5_555": "F5 555nm", "f6_590": "F6 590nm",
     "f7_630": "F7 630nm", "f8_680": "F8 680nm",
-    "clear": "Clear", "nir": "NIR",
+    "nir": "NIR",
+    # AS7343
     "f1_405": "F1 405nm", "f2_425": "F2 425nm", "fz_450": "FZ 450nm",
-    "f3_475": "F3 475nm", "f4_515": "F4 515nm", "f5_550": "F5 550nm",
+    "f3_475": "F3 475nm", "f5_550": "F5 550nm",
     "fy_555": "FY 555nm", "fxl_600": "FXL 600nm", "f6_640": "F6 640nm",
     "f7_690": "F7 690nm", "f8_745": "F8 745nm", "nir_855": "NIR 855nm",
+    # Shared
+    "f4_515": "F4 515nm", "clear": "Clear",
 }
 
 
@@ -128,115 +132,11 @@ def _try_parse(line: str):
         return None
 
 
-def parse_status(line: str) -> dict | None:
-    """
-    Parse a 'status' response containing spectrometer_status and/or bme_status.
-    Returns a dict with keys 'spectrometer' and/or 'bme', or None if not a
-    status line.
-    """
-    obj = _try_parse(line)
-    if obj is None:
-        return None
-    result = {}
-    if "spectrometer_status" in obj:
-        result["spectrometer"] = obj["spectrometer_status"]
-    if "bme_status" in obj:
-        result["bme"] = obj["bme_status"]
-    return result if result else None
-
-
-def parse_spec(line: str) -> dict | None:
-    """
-    Parse an ambient 'spec' response.
-    Returns {"model": str, "channels": dict} or None.
-    """
-    obj = _try_parse(line)
-    if obj is None:
-        return None
-    spec = obj.get("spectrometer")
-    if not isinstance(spec, dict):
-        return None
-    if "error" in spec:
-        return None
-    channels = spec.get("channels")
-    model = spec.get("model", "")
-    if isinstance(channels, dict) and model:
-        return {"model": model, "channels": channels}
-    return None
-
-
-def parse_spec_flash(line: str) -> dict | None:
-    """
-    Parse a 'spec_flash' response — we use the diff reading.
-    Returns {"model": str, "channels": dict} or None.
-    """
-    obj = _try_parse(line)
-    if obj is None:
-        return None
-    # spec_flash produces three top-level keys; we want the diff
-    diff = obj.get("spectrometer_diff")
-    if isinstance(diff, dict) and "channels" in diff and "model" in diff:
-        if "error" not in diff:
-            return {"model": diff["model"], "channels": diff["channels"]}
-    return None
-
-
-def parse_bme(line: str) -> dict | None:
-    """
-    Parse an 'env' response.
-    Returns {"T": float, "P": float, "RH": float, "Gas": int} or None.
-    """
-    obj = _try_parse(line)
-    if obj is None:
-        return None
-    bme = obj.get("bme_read")
-    if not isinstance(bme, dict):
-        return None
-    if all(k in bme for k in ("T", "P", "RH", "Gas")):
-        return {
-            "T":   float(bme["T"]),
-            "P":   float(bme["P"]),
-            "RH":  float(bme["RH"]),
-            "Gas": int(bme["Gas"]),
-        }
-    return None
-
-
-def parse_spec_config(line: str) -> dict | None:
-    """
-    Parse a spectrometer_config response (after set_gain / set_atime / set_astep).
-    Returns {"atime": int, "astep": int, "gain": int} or None.
-    """
-    obj = _try_parse(line)
-    if obj is None:
-        return None
-    cfg = obj.get("spectrometer_config")
-    if isinstance(cfg, dict) and "error" not in cfg:
-        return cfg
-    return None
-
-
-def parse_error(line: str) -> str | None:
-    """
-    Return a human-readable error string if the line contains a firmware error,
-    otherwise None.
-    """
-    obj = _try_parse(line)
-    if obj is None:
-        return None
-    # Check common error locations
-    for key in ("spectrometer", "spectrometer_config", "bme_status"):
-        sub = obj.get(key)
-        if isinstance(sub, dict) and "error" in sub:
-            return f"{key}: {sub['error']}"
-    return None
-
-
 def classify_line(line: str) -> tuple[str, object]:
     """
     Classify an incoming serial line and return (kind, parsed) where kind is
     one of: 'hello', 'status', 'spec', 'spec_flash', 'bme', 'spec_config',
-    'error', 'unknown'.
+    'led_set', 'error', 'unknown'.
     """
     stripped = line.strip()
     if "Hello CO2 meter ready" in stripped:
@@ -248,36 +148,51 @@ def classify_line(line: str) -> tuple[str, object]:
 
     # Status
     if "spectrometer_status" in obj or "bme_status" in obj:
-        return ("status", parse_status(stripped))
+        result = {}
+        if "spectrometer_status" in obj:
+            result["spectrometer"] = obj["spectrometer_status"]
+        if "bme_status" in obj:
+            result["bme"] = obj["bme_status"]
+        return ("status", result) if result else ("unknown", stripped)
 
     # Spec flash (check before ambient because both have 'spectrometer' key)
     if "spectrometer_diff" in obj:
-        parsed = parse_spec_flash(stripped)
-        if parsed:
-            return ("spec_flash", parsed)
+        diff = obj["spectrometer_diff"]
+        if isinstance(diff, dict) and "channels" in diff and "model" in diff:
+            if "error" not in diff:
+                return ("spec_flash", {"model": diff["model"], "channels": diff["channels"]})
 
-    # Ambient spec
+    # Spectrometer responses (ambient read or LED set)
     if "spectrometer" in obj:
-        parsed = parse_spec(stripped)
-        if parsed:
-            return ("spec", parsed)
-        err = parse_error(stripped)
-        if err:
-            return ("error", err)
+        spec = obj["spectrometer"]
+        if isinstance(spec, dict):
+            # LED set response
+            if "led_current_ma" in spec:
+                return ("led_set", spec)
+            # Error response
+            if "error" in spec:
+                return ("error", f"spectrometer: {spec['error']}")
+            # Ambient spec read
+            channels = spec.get("channels")
+            model = spec.get("model", "")
+            if isinstance(channels, dict) and model:
+                return ("spec", {"model": model, "channels": channels})
 
     # BME
     if "bme_read" in obj:
-        parsed = parse_bme(stripped)
-        if parsed:
-            return ("bme", parsed)
+        bme = obj["bme_read"]
+        if isinstance(bme, dict) and all(k in bme for k in ("T", "P", "RH", "Gas")):
+            return ("bme", {
+                "T": float(bme["T"]), "P": float(bme["P"]),
+                "RH": float(bme["RH"]), "Gas": int(bme["Gas"]),
+            })
 
     # Config ack
     if "spectrometer_config" in obj:
-        parsed = parse_spec_config(stripped)
-        if parsed:
-            return ("spec_config", parsed)
-        err = parse_error(stripped)
-        if err:
-            return ("error", err)
+        cfg = obj["spectrometer_config"]
+        if isinstance(cfg, dict):
+            if "error" in cfg:
+                return ("error", f"spectrometer_config: {cfg['error']}")
+            return ("spec_config", cfg)
 
     return ("unknown", stripped)

@@ -135,11 +135,13 @@ bool initAS7343() {
     if (!readRegister8(kAs7343Cfg20, &cfg20)) return false;
     const uint8_t new_cfg20 = (cfg20 & ~kAs7343AutoSmuxMask) | kAs7343AutoSmux18;
     if (!writeRegister8(kAs7343Cfg20, new_cfg20)) return false;
+    #if DEBUG
     uint8_t readback = 0;
     readRegister8(kAs7343Cfg20, &readback);
     Serial.print(F("[as7343-init] CFG20(0xD6) was=0x")); Serial.print(cfg20, HEX);
     Serial.print(F(" wrote=0x")); Serial.print(new_cfg20, HEX);
     Serial.print(F(" readback=0x")); Serial.println(readback, HEX);
+    #endif
   }
 
   return true;
@@ -213,9 +215,15 @@ bool as7343_readInto(SpectrometerResult *out) {
   // Safe to stop measurement now
   writeRegister8(kAs7343Enable, enable_val & ~kAs7343SpEnBit);
 
-  const bool saturated = (astatus_val & kAs7343AstatusAsat) != 0;
-  out->model    = SpectrometerModel::AS7343;
-  out->sat_mask = saturated ? 0xFFFF : 0;
+  out->model = SpectrometerModel::AS7343;
+
+  // Per-channel saturation: ASTATUS bit7 = global ASAT,
+  // STATUS2 bit2 = analog sat, bit3 = digital sat.
+  // When saturated, mark all spectral channels (bits 0..12).
+  const bool analog_sat  = (status2 & kAs7343AsatAnalog) != 0;
+  const bool digital_sat = (status2 & kAs7343AsatDigital) != 0;
+  const bool global_sat  = (astatus_val & kAs7343AstatusAsat) != 0;
+  out->sat_mask = (analog_sat || digital_sat || global_sat) ? 0x1FFF : 0;  // bits 0-12
 
   // Decode all 18 raw DATA registers (little-endian 16-bit each)
   uint16_t raw[18];

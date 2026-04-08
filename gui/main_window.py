@@ -6,11 +6,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pyqtgraph as pg
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,7 +18,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -89,6 +86,7 @@ class MainWindow(QMainWindow):
         self._acq_timer.timeout.connect(self._on_acquire_tick)
         self._last_spec: dict | None = None
         self._last_bme: dict | None = None
+        self._acq_pending = False
         self._gain = 5
         self._atime = 100
         self._astep = 999
@@ -404,6 +402,14 @@ class MainWindow(QMainWindow):
             port = self._port_combo.currentText()
             if not port or port.startswith("("):
                 return
+            self._status_bar.showMessage(f"Checking {port}…")
+            if not device_manager.check_port(port):
+                self._status_bar.showMessage(
+                    f"{port}: no ambit device found (no hello response)"
+                )
+                return
+            if self._worker is not None:
+                self._worker.deleteLater()
             self._worker = SerialWorker(self)
             self._worker.spec_received.connect(self._on_spec)
             self._worker.bme_received.connect(self._on_bme)
@@ -475,6 +481,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_spec(self, data: dict):
+        self._acq_pending = False
         ts = time.time()
         channels = data.get("channels", {})
         self._last_spec = channels
@@ -494,12 +501,16 @@ class MainWindow(QMainWindow):
         self._update_bme_plot()
 
     def _on_spec_config(self, cfg: dict):
-        self._status_bar.showMessage(
-            f"Config applied — gain={cfg.get('gain')}, "
-            f"atime={cfg.get('atime')}, astep={cfg.get('astep')}"
-        )
+        if "led_current_ma" in cfg:
+            self._status_bar.showMessage(f"LED set to {cfg['led_current_ma']} mA")
+        else:
+            self._status_bar.showMessage(
+                f"Config applied — gain={cfg.get('gain')}, "
+                f"atime={cfg.get('atime')}, astep={cfg.get('astep')}"
+            )
 
     def _on_error(self, msg: str):
+        self._acq_pending = False
         self._status_bar.showMessage(f"Error: {msg}")
 
     # ------------------------------------------------------------------
@@ -509,11 +520,15 @@ class MainWindow(QMainWindow):
     def _on_acquire_tick(self):
         if not self._worker or not self._worker.isRunning():
             return
+        if self._acq_pending:
+            return  # previous cycle still in progress
+        self._acq_pending = True
+        # Send env first so BME data arrives before spec (fixes data alignment)
+        self._worker.send_command(protocol.CMD_ENV)
         if self._mode_flash.isChecked():
             self._worker.send_command(protocol.CMD_SPEC_FLASH)
         else:
             self._worker.send_command(protocol.CMD_SPEC)
-        self._worker.send_command(protocol.CMD_ENV)
 
     def _on_start(self):
         if not self._worker:
@@ -541,10 +556,16 @@ class MainWindow(QMainWindow):
     def _on_clear(self):
         self._spec_buffer.clear()
         self._bme_buffer.clear()
+        # Remove spec curves and legend
         for curve in self._spec_curves.values():
-            curve.setData([], [])
-        for curve in self._bme_curves.values():
-            curve.setData([], [])
+            self._spec_plot.removeItem(curve)
+        self._spec_curves.clear()
+        self._spec_legend.clear()
+        # Remove BME curves from their ViewBoxes and legend
+        for field, curve in self._bme_curves.items():
+            self._bme_vbs[field].removeItem(curve)
+        self._bme_curves.clear()
+        self._bme_legend.clear()
         self._last_spec = None
         self._last_bme = None
 
@@ -554,9 +575,11 @@ class MainWindow(QMainWindow):
 
     def _on_record_start(self):
         filename = self._filename_edit.text().strip() or "DATA"
+        mode = "flash" if self._mode_flash.isChecked() else "ambient"
         path = self._recorder.start_recording(
             filename=filename,
             model=self._model,
+            mode=mode,
             gain=self._gain,
             atime=self._atime_spin.value(),
             astep=self._astep_spin.value(),
@@ -578,7 +601,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_apply_settings(self):
-        if not self._worker:
+        if not self._worker or not self._worker.isRunning():
             return
         gain_val = self._gain_combo.currentData()
         atime_val = self._atime_spin.value()

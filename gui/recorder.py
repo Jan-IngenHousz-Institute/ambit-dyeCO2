@@ -2,11 +2,9 @@
 recorder.py — TSV file recorder for ambit dyeCO2 measurements.
 
 File naming: data/YYYY-MM-DD_HH-MM-SS_<filename>.txt
-Header row : # started=<ISO>, model=<model>, gain=<N>, atime=<N>, astep=<N>, led=<N>mA
-Column row : timestamp\t<spec channels...>\tT\tP\tRH\tGas
+Columns: timestamp, <spec channels...>, T, P, RH, Gas, model, mode, gain, atime, astep, led
 """
 
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +14,7 @@ class Recorder:
         self._data_dir = Path(data_dir)
         self._file = None
         self._spec_channels: list[str] = []
+        self._meta_vals: list[str] = []
         self._recording = False
 
     @property
@@ -26,13 +25,14 @@ class Recorder:
         self,
         filename: str,
         model: str,
+        mode: str,
         gain: int,
         atime: int,
         astep: int,
         led: int,
         spec_channels: list[str],
     ) -> Path:
-        """Open a new TSV file and write metadata + column headers."""
+        """Open a new TSV file and write column headers."""
         self._data_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         safe_name = filename.strip() or "DATA"
@@ -40,16 +40,15 @@ class Recorder:
         path = self._data_dir / (stem + ".txt")
 
         self._spec_channels = list(spec_channels)
+        self._meta_vals = [model, mode, str(gain), str(atime), str(astep), str(led)]
         try:
             self._file = open(path, "w", encoding="utf-8", newline="\n")
-            # Metadata comment line
-            self._file.write(
-                f"# started={now.isoformat(timespec='seconds')}, "
-                f"model={model}, gain={gain}, atime={atime}, "
-                f"astep={astep}, led={led}mA\n"
+            cols = (
+                ["timestamp"]
+                + self._spec_channels
+                + ["T", "P", "RH", "Gas"]
+                + ["model", "mode", "gain", "atime", "astep", "led"]
             )
-            # Column headers
-            cols = ["timestamp"] + self._spec_channels + ["T", "P", "RH", "Gas"]
             self._file.write("\t".join(cols) + "\n")
             self._file.flush()
         except OSError:
@@ -81,7 +80,7 @@ class Recorder:
             str(bme.get("RH", "")),
             str(bme.get("Gas", "")),
         ]
-        row = [timestamp] + spec_vals + bme_vals
+        row = [timestamp] + spec_vals + bme_vals + self._meta_vals
         self._file.write("\t".join(row) + "\n")
         self._file.flush()
 
@@ -92,3 +91,4 @@ class Recorder:
             self._file = None
         self._recording = False
         self._spec_channels = []
+        self._meta_vals = []

@@ -39,12 +39,3 @@ def check_port(port: str) -> bool:
     return False
 
 
-def autodetect() -> str | None:
-    """
-    Scan all available ports and return the first one that responds to 'hello'.
-    Returns the port name string, or None if no device found.
-    """
-    for port in list_ports():
-        if check_port(port):
-            return port
-    return None

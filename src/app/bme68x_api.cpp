@@ -7,30 +7,30 @@
 static constexpr uint8_t BME68X_ADDR = 0x76; // common: 0x76 or 0x77
 Bme68x bme;
 
-static void printBMEField(const bme68xData &d)
+static void printBMEJson(const bme68xData &d)
 {
 #ifdef BME68X_USE_FPU
-  Serial.print("{\"T\":");
+  Serial.print(F("{\"T\":"));
   Serial.print(d.temperature, 2);
-  Serial.print(",\"P\":");
+  Serial.print(F(",\"P\":"));
   Serial.print(d.pressure / 100.0f, 2);
-  Serial.print(",\"RH\":");
+  Serial.print(F(",\"RH\":"));
   Serial.print(d.humidity, 2);
-  Serial.print(",\"Gas\":");
+  Serial.print(F(",\"Gas\":"));
   Serial.print(d.gas_resistance, 0);
-  Serial.println("}");
+  Serial.print('}');
 #else
   // Bosch fixed-point defaults:
   // temperature: °C * 100, humidity: %RH * 1000, pressure: Pa, gas_resistance: Ω
-  Serial.print("T=");
+  Serial.print(F("{\"T\":"));
   Serial.print(d.temperature / 100.0f, 2);
-  Serial.print(" °C  P=");
+  Serial.print(F(",\"P\":"));
   Serial.print(d.pressure / 100.0f, 2);
-  Serial.print(" hPa  RH=");
+  Serial.print(F(",\"RH\":"));
   Serial.print(d.humidity / 1000.0f, 3);
-  Serial.print(" %  Gas=");
+  Serial.print(F(",\"Gas\":"));
   Serial.print(d.gas_resistance);
-  Serial.println(" Ω");
+  Serial.print('}');
 #endif
 }
 
@@ -50,38 +50,23 @@ bool initBME(void) {
 }
 
 
-bool bme_read(void){
-    if (!bme_available) {
-      Serial.println("bme68x not available");
-      return false;
-    }
-    bme.setOpMode(BME68X_FORCED_MODE);
-    // Wait long enough for measurement + heater
-    uint32_t dur_us = bme.getMeasDur(BME68X_FORCED_MODE);
-    delayMicroseconds(dur_us + 150000); // + heater duration (150ms)
-    // Fetch and print all returned fields
-    uint8_t n = bme.fetchData();
-    if (bme.checkStatus() != 0) {
-    Serial.print("fetchData error: ");
-    Serial.println(bme.statusString());
-    return false;
-    }
-    if (n > 0) {
-        bme68xData *all = bme.getAllData();
-        for (uint8_t i = 0; i < n; i++) {
-        printBMEField(all[i]);
-        }
-    }
-    return true;
-}
-
 void cmd_bme_read(){
     if (!bme_available) {
-      Serial.println("bme68x not available");
+      Serial.println(F("{\"bme_read\":{\"error\":\"not_available\"}}"));
       return;
     }
-    Serial.print(F("\"bme_read\":"));
-    bme_read();
+    bme.setOpMode(BME68X_FORCED_MODE);
+    uint32_t dur_us = bme.getMeasDur(BME68X_FORCED_MODE);
+    delayMicroseconds(dur_us + 150000); // + heater duration (150ms)
+    uint8_t n = bme.fetchData();
+    if (bme.checkStatus() != 0 || n == 0) {
+      Serial.println(F("{\"bme_read\":{\"error\":\"read_failed\"}}"));
+      return;
+    }
+    bme68xData *all = bme.getAllData();
+    Serial.print(F("{\"bme_read\":"));
+    printBMEJson(all[0]);  // use first (most recent) reading
+    Serial.println('}');
 }
 
 void cmd_bme_status() {

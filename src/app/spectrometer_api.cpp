@@ -10,10 +10,7 @@
 // ---------------------------------------------------------------------------
 bool spectrometer_available = false;
 SpectrometerModel spectrometer_model = SpectrometerModel::None;
-
-// Transitional shim: keep as7341_available for the Phase 2 if-else command path.
-// Removed in Phase 3 once the dispatch table takes over.
-bool as7341_available = false;
+static uint16_t s_led_current_ma = 0;  // tracks last-set LED current
 
 // ---------------------------------------------------------------------------
 // Board-level LED policy
@@ -56,7 +53,6 @@ namespace {
 constexpr uint8_t  kSpectrometerI2cAddress    = 0x39;
 constexpr uint32_t kProbeRetryWindowUs         = 5000;
 constexpr uint32_t kProbeRetryIntervalUs        = 250;
-constexpr bool     kSpectrometerDetectionDebug  = true;
 
 struct DetectionResult {
   SpectrometerModel model = SpectrometerModel::None;
@@ -72,15 +68,9 @@ struct DetectionDebugInfo {
   uint8_t as7341_chip_id = 0;
 };
 
-void syncLegacyAvailability() {
-  as7341_available =
-      spectrometer_available && spectrometer_model == SpectrometerModel::AS7341;
-}
-
 void setSpectrometerState(SpectrometerModel model, bool available) {
   spectrometer_model    = model;
   spectrometer_available = available;
-  syncLegacyAvailability();
 }
 
 bool spectrometerAddressAcks() {
@@ -93,9 +83,11 @@ void printHexByte(uint8_t value) {
   Serial.print(value, HEX);
 }
 
-void printDetectionDebug(const char *reason, const DetectionDebugInfo &debug,
-                         SpectrometerModel result_model, bool initialized) {
-  if (!kSpectrometerDetectionDebug) return;
+void printDetectionDebug([[maybe_unused]] const char *reason,
+                         [[maybe_unused]] const DetectionDebugInfo &debug,
+                         [[maybe_unused]] SpectrometerModel result_model,
+                         [[maybe_unused]] bool initialized) {
+#if DEBUG
   Serial.print(F("[spectrometer-debug] reason="));
   Serial.print(reason);
   Serial.print(F(" attempts="));
@@ -114,6 +106,7 @@ void printDetectionDebug(const char *reason, const DetectionDebugInfo &debug,
   Serial.print(spectrometerModelName(result_model));
   Serial.print(F(" init_ok="));
   Serial.println(initialized ? F("1") : F("0"));
+#endif
 }
 
 DetectionResult detectSpectrometerWithinRetryWindow(DetectionDebugInfo *debug) {
@@ -232,15 +225,6 @@ uint16_t spectrometerGetAStep() {
   }
 }
 
-// Settling delay for LED stabilisation before a lit read.
-// Formula: ceil((ATIME+1)*(ASTEP+1)*2.78 µs / 1000) + 2 ms, floor 5 ms.
-// Uses integer arithmetic to avoid float and uint16_t overflow.
-uint32_t computeSettlingDelayMs(uint8_t atime, uint16_t astep) {
-  const uint32_t t_ms =
-      ((uint32_t)(atime + 1) * (uint32_t)(astep + 1) * 278ul + 99999ul) / 100000ul + 2ul;
-  return t_ms < 5u ? 5u : t_ms;
-}
-
 // Resolves the channel name table and whether to use indexed names ("d0"…)
 // for the given result (bringup mode / unexpected count).
 const char * const *resolveChannelNames(const SpectrometerResult &r, bool *use_index_names) {
@@ -300,35 +284,33 @@ const char *spectrometerModelName(SpectrometerModel model) {
 bool initSpectrometer() {
   const bool initialized = detectAndInitialize(false, "boot");
 
+#if DEBUG
   switch (spectrometer_model) {
   case SpectrometerModel::AS7341:
-    Serial.println(F("Spectrometer detected: AS7341"));
+    Serial.println(F("[init] Spectrometer: AS7341"));
     break;
   case SpectrometerModel::AS7343:
-    Serial.println(F("Spectrometer detected: AS7343"));
+    Serial.println(F("[init] Spectrometer: AS7343"));
     break;
   case SpectrometerModel::ProbePendingAt0x39:
-    Serial.println(F("Unidentified spectrometer at 0x39, will retry on first command"));
+    Serial.println(F("[init] Spectrometer: pending at 0x39"));
     break;
   case SpectrometerModel::None:
   case SpectrometerModel::UnknownAt0x39:
   default:
-    Serial.println(F("No spectrometer detected at 0x39"));
+    Serial.println(F("[init] Spectrometer: not found"));
     break;
   }
+#endif
   return initialized;
 }
 
 void spectrometerPrintNotAvailableError() {
-  Serial.println(F("\"spectrometer\":{\"error\":\"not_available\"}"));
+  Serial.println(F("{\"spectrometer\":{\"error\":\"not_available\"}}"));
 }
 
 void spectrometerPrintUnsupportedDeviceError() {
-  Serial.println(F("\"spectrometer\":{\"error\":\"unsupported_device_at_0x39\"}"));
-}
-
-void spectrometerPrintNotYetImplementedError() {
-  Serial.println(F("{\"spectrometer\":{\"error\":\"not_yet_implemented\"}}"));
+  Serial.println(F("{\"spectrometer\":{\"error\":\"unsupported_device_at_0x39\"}}"));
 }
 
 bool spectrometerPrepareLegacyCommand() {
@@ -378,6 +360,7 @@ bool spectrometer_set_led_current(uint16_t led_current_ma) {
     Serial.println(F("{\"spectrometer\":{\"error\":\"led_set_failed\"}}"));
     return false;
   }
+  s_led_current_ma = actual_ma;
 
   Serial.print(F("{\"spectrometer\":{\"led_current_ma\":"));
   Serial.print(actual_ma);
@@ -407,10 +390,8 @@ bool spectrometer_read_flash(uint16_t led_current_ma) {
     return false;
   }
 
-  const uint8_t  atime     = spectrometerGetAtIME();
-  const uint16_t astep     = spectrometerGetAStep();
-  const uint32_t settle_ms = computeSettlingDelayMs(atime, astep);
-  delay(settle_ms);
+  // LED thermal settling: 50 ms minimum before starting the lit integration
+  delay(50);
 
   // Lit read
   if (!spectrometerReadInto(&lit)) {
@@ -464,6 +445,8 @@ void cmd_spectrometer_status() {
     Serial.print(astep);
     Serial.print(F(",\"gain\":"));
     Serial.print(gain);
+    Serial.print(F(",\"led\":"));
+    Serial.print(s_led_current_ma);
   }
 
   Serial.println(F("}}"));

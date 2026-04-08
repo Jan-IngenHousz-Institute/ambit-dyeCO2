@@ -137,7 +137,7 @@ class SerialWorker(QThread):
                 if parsed:
                     self.bme_received.emit(parsed)
 
-            elif kind == "spec_config":
+            elif kind in ("spec_config", "led_set"):
                 if parsed:
                     self.spec_config_received.emit(parsed)
 
