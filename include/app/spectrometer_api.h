@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <stdint.h>
 #include "app/spectrometer_types.h"
 
@@ -15,6 +16,9 @@ bool spectrometer_set_led_current(uint16_t led_current_ma);
 bool spectrometer_read_flash(uint16_t led_current_ma);
 void spectrometerPrintNotAvailableError();
 void spectrometerPrintUnsupportedDeviceError();
+// Fill an existing JsonObject with the spectrometer status fields (no print).
+// Used by cmd_spectrometer_status() and by the combined "status" command.
+void fill_spectrometer_status(JsonObject out);
 void cmd_spectrometer_status();
 void cmd_spectrometer_set_atime(int argc, const char *argv[]);
 void cmd_spectrometer_set_astep(int argc, const char *argv[]);

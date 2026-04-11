@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <Wire.h>
 
 #include "app/as7341_api.h"
@@ -424,32 +425,29 @@ bool spectrometer_read_flash(uint16_t led_current_ma) {
   return true;
 }
 
-void cmd_spectrometer_status() {
-  Serial.print(F("{\"spectrometer_status\":{\"model\":\""));
-  Serial.print(spectrometerModelName(spectrometer_model));
-  Serial.print(F("\",\"available\":"));
-  Serial.print(spectrometer_available ? F("true") : F("false"));
-
+void fill_spectrometer_status(JsonObject out) {
+  out["model"]     = spectrometerModelName(spectrometer_model);
+  out["available"] = spectrometer_available;
   if (spectrometer_available) {
-    const uint8_t  atime = spectrometerGetAtIME();
-    const uint16_t astep = spectrometerGetAStep();
     uint8_t gain = 0;
     if (spectrometer_model == SpectrometerModel::AS7341) {
       gain = as7341_getGain();
     } else if (spectrometer_model == SpectrometerModel::AS7343) {
       gain = as7343_getGain();
     }
-    Serial.print(F(",\"atime\":"));
-    Serial.print(atime);
-    Serial.print(F(",\"astep\":"));
-    Serial.print(astep);
-    Serial.print(F(",\"gain\":"));
-    Serial.print(gain);
-    Serial.print(F(",\"led\":"));
-    Serial.print(s_led_current_ma);
+    out["atime"] = spectrometerGetAtIME();
+    out["astep"] = spectrometerGetAStep();
+    out["gain"]  = gain;
+    out["led"]   = s_led_current_ma;
   }
+}
 
-  Serial.println(F("}}"));
+void cmd_spectrometer_status() {
+  StaticJsonDocument<256> doc;
+  JsonObject obj = doc["spectrometer_status"].to<JsonObject>();
+  fill_spectrometer_status(obj);
+  serializeJson(doc, Serial);
+  Serial.println();
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+#include <ArduinoJson.h>
 #include <Wire.h>
 #include "app/commands.h"
 #include "app/bme68x_api.h"
@@ -60,8 +61,15 @@ void handleCommandText(const String &cmd) {
     cmd_bme_status();
 
   } else if (cmd == "status") {
-    cmd_spectrometer_status();
-    cmd_bme_status();
+    // Single combined JSON line with both sub-objects, so the GUI sees one
+    // message per "status" request.
+    StaticJsonDocument<512> doc;
+    JsonObject spec = doc["spectrometer_status"].to<JsonObject>();
+    fill_spectrometer_status(spec);
+    JsonObject bme = doc["bme_status"].to<JsonObject>();
+    fill_bme_status(bme);
+    serializeJson(doc, Serial);
+    Serial.println();
 
   } else if (cmd == "reboot") {
     cmd_reboot();

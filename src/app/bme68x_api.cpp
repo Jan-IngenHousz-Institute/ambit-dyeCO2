@@ -1,3 +1,4 @@
+#include <ArduinoJson.h>
 #include <Wire.h>
 #include <bme68xLibrary.h>
 #include "app/bme68x_api.h"
@@ -69,8 +70,14 @@ void cmd_bme_read(){
     Serial.println('}');
 }
 
+void fill_bme_status(JsonObject out) {
+  out["available"] = bme_available;
+}
+
 void cmd_bme_status() {
-  Serial.print(F("{\"bme_status\":{\"available\":"));
-  Serial.print(bme_available ? F("true") : F("false"));
-  Serial.println(F("}}"));
+  StaticJsonDocument<64> doc;
+  JsonObject obj = doc["bme_status"].to<JsonObject>();
+  fill_bme_status(obj);
+  serializeJson(doc, Serial);
+  Serial.println();
 }
