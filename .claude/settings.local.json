@@ -14,7 +14,8 @@
       "WebFetch(domain:look.ams-osram.com)",
       "WebFetch(domain:www.mouser.com)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('gui/main_window.py', doraise=True\\); print\\('OK'\\)\")"
     ]
   }
 }

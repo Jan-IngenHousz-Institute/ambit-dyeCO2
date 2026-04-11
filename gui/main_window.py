@@ -10,7 +10,6 @@ import pyqtgraph as pg
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -69,6 +68,35 @@ INTERVALS = [
 ]
 
 
+class TimeAxisItem(pg.AxisItem):
+    """Custom axis that can display elapsed seconds or HH:MM:SS timestamps."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._use_timestamp = False
+        self._t0 = 0.0
+
+    def set_timestamp_mode(self, enabled: bool):
+        self._use_timestamp = enabled
+        self.picture = None
+        self.update()
+
+    def set_t0(self, t0: float):
+        self._t0 = t0
+
+    def tickStrings(self, values, scale, spacing):
+        if self._use_timestamp and self._t0 > 0:
+            strings = []
+            for v in values:
+                try:
+                    dt = datetime.fromtimestamp(v + self._t0)
+                    strings.append(dt.strftime("%H:%M:%S"))
+                except (ValueError, OSError):
+                    strings.append("")
+            return strings
+        return super().tickStrings(values, scale, spacing)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -91,6 +119,8 @@ class MainWindow(QMainWindow):
         self._atime = 100
         self._astep = 999
         self._led = 10
+        self._auto_range = True
+        self._show_timestamp = False
 
         # Pyqtgraph global style
         pg.setConfigOption("background", "#1e1e2e")
@@ -213,7 +243,11 @@ class MainWindow(QMainWindow):
         form_set.addRow("ATIME:", self._atime_spin)
         form_set.addRow("ASTEP:", self._astep_spin)
         form_set.addRow("LED:", self._led_spin)
+        self._defaults_btn = QPushButton("Reset to Default")
+        self._defaults_btn.clicked.connect(self._on_reset_defaults)
+
         form_set.addRow(self._apply_btn)
+        form_set.addRow(self._defaults_btn)
 
         layout.addWidget(grp_set)
         layout.addStretch()
@@ -228,14 +262,18 @@ class MainWindow(QMainWindow):
         # Splitter with two plots
         splitter = QSplitter(Qt.Vertical)
 
-        self._spec_plot = pg.PlotWidget(title="Spectrometer")
+        self._spec_time_axis = TimeAxisItem(orientation='bottom')
+        self._spec_plot = pg.PlotWidget(title="Spectrometer",
+                                        axisItems={'bottom': self._spec_time_axis})
         self._spec_plot.setLabel("left", "Counts")
         self._spec_plot.setLabel("bottom", "Time", units="s")
         self._spec_plot.showGrid(x=True, y=True, alpha=0.3)
         self._spec_legend = self._spec_plot.addLegend(offset=(10, 10))
         self._spec_curves: dict[str, pg.PlotDataItem] = {}
 
-        self._bme_plot = pg.PlotWidget(title="BME68x Environment")
+        self._bme_time_axis = TimeAxisItem(orientation='bottom')
+        self._bme_plot = pg.PlotWidget(title="BME68x Environment",
+                                       axisItems={'bottom': self._bme_time_axis})
         self._bme_plot.setLabel("bottom", "Time", units="s")
         self._bme_plot.showGrid(x=True, y=True, alpha=0.3)
         self._bme_legend = self._bme_plot.addLegend(offset=(10, 10))
@@ -247,6 +285,12 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._spec_plot)
         splitter.addWidget(self._bme_plot)
         splitter.setSizes([400, 300])
+
+        # Disable auto-range when user manually zooms/pans
+        self._spec_plot.getViewBox().sigRangeChangedManually.connect(
+            self._on_manual_zoom)
+        self._bme_plot.getViewBox().sigRangeChangedManually.connect(
+            self._on_manual_zoom)
 
         layout.addWidget(splitter, stretch=1)
 
@@ -327,13 +371,29 @@ class MainWindow(QMainWindow):
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.clicked.connect(self._on_clear)
 
-        self._autoscale_chk = QCheckBox("Autoscale")
-        self._autoscale_chk.setChecked(True)
+        self._yfit_btn = QPushButton("↕ Y-Fit")
+        self._yfit_btn.setToolTip("Auto-fit vertical axis only")
+        self._yfit_btn.clicked.connect(self._on_y_fit)
+
+        self._xfit_btn = QPushButton("↔ X-Fit")
+        self._xfit_btn.setToolTip("Auto-fit horizontal axis only")
+        self._xfit_btn.clicked.connect(self._on_x_fit)
+
+        self._resetview_btn = QPushButton("Reset View")
+        self._resetview_btn.setToolTip("Reset to full auto-scale view")
+        self._resetview_btn.clicked.connect(self._on_reset_view)
+
+        self._time_toggle_btn = QPushButton("Time (s)")
+        self._time_toggle_btn.setToolTip("Toggle between elapsed seconds and HH:MM:SS")
+        self._time_toggle_btn.clicked.connect(self._on_toggle_time_axis)
 
         h.addWidget(self._start_btn)
         h.addWidget(self._stop_btn)
         h.addWidget(self._clear_btn)
-        h.addWidget(self._autoscale_chk)
+        h.addWidget(self._yfit_btn)
+        h.addWidget(self._xfit_btn)
+        h.addWidget(self._resetview_btn)
+        h.addWidget(self._time_toggle_btn)
         h.addStretch()
 
         # Recording controls
@@ -554,6 +614,7 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage("Stopped")
 
     def _on_clear(self):
+        # Clear graph buffers and curves; recording continues to the same file
         self._spec_buffer.clear()
         self._bme_buffer.clear()
         # Remove spec curves and legend
@@ -617,6 +678,62 @@ class MainWindow(QMainWindow):
         self._worker.send_command(protocol.cmd_set_led(led_val))
 
     # ------------------------------------------------------------------
+    # View control handlers
+    # ------------------------------------------------------------------
+
+    def _on_manual_zoom(self):
+        """Called when the user manually zooms/pans a plot."""
+        self._auto_range = False
+
+    def _on_y_fit(self):
+        """Auto-fit vertical axis only (keep horizontal range)."""
+        self._spec_plot.enableAutoRange(axis='y')
+        for vb in self._bme_vbs.values():
+            vb.enableAutoRange(axis='y')
+
+    def _on_x_fit(self):
+        """Auto-fit horizontal axis only (keep vertical range)."""
+        self._spec_plot.enableAutoRange(axis='x')
+        for vb in self._bme_vbs.values():
+            vb.enableAutoRange(axis='x')
+
+    def _on_reset_view(self):
+        """Reset to full auto-scale on both axes, re-enable live auto-range."""
+        self._auto_range = True
+        self._spec_plot.enableAutoRange()
+        for vb in self._bme_vbs.values():
+            vb.enableAutoRange()
+
+    def _on_toggle_time_axis(self):
+        """Toggle x-axis between elapsed seconds and HH:MM:SS."""
+        self._show_timestamp = not self._show_timestamp
+        if self._show_timestamp:
+            self._time_toggle_btn.setText("HH:MM:SS")
+            self._spec_plot.setLabel("bottom", "Timestamp")
+            self._bme_plot.setLabel("bottom", "Timestamp")
+        else:
+            self._time_toggle_btn.setText("Time (s)")
+            self._spec_plot.setLabel("bottom", "Time", units="s")
+            self._bme_plot.setLabel("bottom", "Time", units="s")
+        self._spec_time_axis.set_timestamp_mode(self._show_timestamp)
+        self._bme_time_axis.set_timestamp_mode(self._show_timestamp)
+        # Force redraw
+        self._update_spec_plot()
+        self._update_bme_plot()
+
+    def _on_reset_defaults(self):
+        """Reset spectrometer settings to model defaults."""
+        defs = protocol.defaults_for_model(self._model)
+        self._atime_spin.setValue(defs["atime"])
+        self._astep_spin.setValue(defs["astep"])
+        self._led_spin.setValue(defs["led"])
+        self._gain = defs["gain"]
+        for i in range(self._gain_combo.count()):
+            if self._gain_combo.itemData(i) == self._gain:
+                self._gain_combo.setCurrentIndex(i)
+                break
+
+    # ------------------------------------------------------------------
     # Plot update helpers
     # ------------------------------------------------------------------
 
@@ -627,6 +744,7 @@ class MainWindow(QMainWindow):
         times = self._spec_buffer.times()
         t0 = times[0]
         t_rel = times - t0
+        self._spec_time_axis.set_t0(t0)
 
         channels = self._spec_buffer.channel_names()
         ordered = [c for c in protocol.channels_for_model(self._model) if c in channels]
@@ -645,7 +763,7 @@ class MainWindow(QMainWindow):
                 self._connect_legend_toggle(self._spec_legend, curve)
             self._spec_curves[ch].setData(t_rel, vals)
 
-        if self._autoscale_chk.isChecked():
+        if self._auto_range:
             self._spec_plot.enableAutoRange()
 
     def _update_bme_plot(self):
@@ -655,6 +773,7 @@ class MainWindow(QMainWindow):
         times = self._bme_buffer.times()
         t0 = times[0]
         t_rel = times - t0
+        self._bme_time_axis.set_t0(t0)
 
         for field in BmeBuffer.FIELDS:
             vals = self._bme_buffer.field(field)
@@ -675,7 +794,7 @@ class MainWindow(QMainWindow):
         # Ensure overlay ViewBoxes have correct geometry (needed on first data)
         self._sync_bme_viewboxes()
 
-        if self._autoscale_chk.isChecked():
+        if self._auto_range:
             for vb in self._bme_vbs.values():
                 vb.enableAutoRange()
 
