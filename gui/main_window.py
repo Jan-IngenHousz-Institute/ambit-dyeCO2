@@ -2,6 +2,7 @@
 main_window.py — QMainWindow for the ambit dyeCO2 controller GUI.
 """
 
+import json
 import sys
 import time
 from datetime import datetime
@@ -9,7 +10,8 @@ from pathlib import Path
 
 import pyqtgraph as pg
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QStandardPaths, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -20,6 +22,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -128,6 +131,19 @@ class MainWindow(QMainWindow):
         self._auto_range = True
         self._show_timestamp = False
 
+        # Li-Control state (all lazily created)
+        self._base_dir = base_dir
+        self._li_worker = None
+        self._li_panel = None
+        self._li_runner = None
+        self._li_discovery = None
+        self._li_recorder = None
+        self._last_manual_cmd_id: str | None = None
+        self._acq_was_running = False
+        self._gui_cfg_path = self._resolve_config_path()
+        self._gui_cfg = self._load_gui_config()
+        self._li_enabled = bool(self._gui_cfg.get("li_control_enabled", False))
+
         # Pyqtgraph global style
         pg.setConfigOption("background", "#1e1e2e")
         pg.setConfigOption("foreground", "#cdd6f4")
@@ -146,20 +162,39 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
-        # Left panel
+        # Left panel wrapped in a scroll area so it gracefully handles small
+        # windows and the extra Li-Control groups when that feature is enabled.
         left_panel = self._build_left_panel()
-        left_panel.setFixedWidth(230)
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QScrollArea.NoFrame)
+        left_scroll.setMinimumWidth(250)
+        left_scroll.setMaximumWidth(340)
 
         # Right panel (plots + controls)
         right_panel = self._build_right_panel()
 
-        root.addWidget(left_panel)
+        root.addWidget(left_scroll)
         root.addWidget(right_panel, stretch=1)
 
         # Status bar
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Not connected")
+
+        # Menu bar + optional Li-Control init
+        self._build_menu()
+        if self._li_enabled:
+            try:
+                self._init_li_control()
+            except Exception as exc:
+                self._li_enabled = False
+                self._gui_cfg["li_control_enabled"] = False
+                self._save_gui_config()
+                self._li_toggle_action.setChecked(False)
+                self._status_bar.showMessage(f"Li-Control disabled: {exc}")
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
@@ -256,6 +291,7 @@ class MainWindow(QMainWindow):
         form_set.addRow(self._defaults_btn)
 
         layout.addWidget(grp_set)
+        self._left_layout = layout   # insertion point for LiControlPanel
         layout.addStretch()
         return panel
 
@@ -805,12 +841,337 @@ class MainWindow(QMainWindow):
                 vb.enableAutoRange()
 
     # ------------------------------------------------------------------
+    # Li-Control: menu, config, init
+    # ------------------------------------------------------------------
+
+    def _resolve_config_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            loc = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+            return Path(loc) / "ambit-dyeCO2" / "gui_config.json"
+        return self._base_dir / "gui_config.json"
+
+    def _load_gui_config(self) -> dict:
+        try:
+            return json.loads(self._gui_cfg_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_gui_config(self) -> None:
+        try:
+            self._gui_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            self._gui_cfg_path.write_text(
+                json.dumps(self._gui_cfg, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    def _build_menu(self) -> None:
+        view_menu = self.menuBar().addMenu("View")
+        self._li_toggle_action = QAction("Enable Li-Control", self)
+        self._li_toggle_action.setCheckable(True)
+        self._li_toggle_action.setChecked(self._li_enabled)
+        self._li_toggle_action.toggled.connect(self._toggle_li_control)
+        view_menu.addAction(self._li_toggle_action)
+
+    def _toggle_li_control(self, enabled: bool) -> None:
+        self._li_enabled = enabled
+        self._gui_cfg["li_control_enabled"] = enabled
+        self._save_gui_config()
+        if enabled:
+            if self._li_panel is None:
+                try:
+                    self._init_li_control()
+                except Exception as exc:
+                    self._li_toggle_action.setChecked(False)
+                    self._status_bar.showMessage(f"Li-Control init failed: {exc}")
+                    return
+            self._li_panel.setVisible(True)
+        else:
+            if self._li_panel is not None:
+                self._li_panel.setVisible(False)
+
+    def _init_li_control(self) -> None:
+        # Lazy imports confined to this method so a broken install doesn't
+        # prevent the GUI from launching when Li-Control is disabled.
+        from li_panel import LiControlPanel
+
+        panel = LiControlPanel()
+        panel.connect_requested.connect(self._on_li_connect)
+        panel.disconnect_requested.connect(self._on_li_disconnect)
+        panel.setpoints_requested.connect(self._on_li_send)
+        panel.stop_requested.connect(self._on_li_stop)
+        panel.scan_requested.connect(self._on_li_scan)
+        panel.sequence_load_requested.connect(self._on_li_load_sequence)
+        panel.sequence_start.connect(self._on_li_sequence_start)
+        panel.sequence_abort.connect(self._on_li_sequence_abort)
+
+        insert_at = self._left_layout.count() - 1  # before the addStretch
+        self._left_layout.insertWidget(insert_at, panel)
+        self._li_panel = panel
+
+        # Try zeroconf discovery; fall back to plain-mDNS resolver alone.
+        try:
+            from li_discovery import LiDiscovery
+            self._li_discovery = LiDiscovery(self)
+        except ImportError:
+            from li_discovery_plain import PlainMdnsResolver
+            self._li_discovery = PlainMdnsResolver(self)
+            self._status_bar.showMessage(
+                "Li-Control: zeroconf missing — using plain mDNS only"
+            )
+        except Exception as exc:
+            self._li_discovery = None
+            self._status_bar.showMessage(f"Li-Control discovery unavailable: {exc}")
+
+        if self._li_discovery is not None:
+            self._li_discovery.host_found.connect(self._on_li_host_found)
+            self._li_discovery.finished.connect(self._on_li_discovery_finished)
+            self._li_discovery.start(5.0)
+
+    # ------------------------------------------------------------------
+    # Li-Control: discovery slots
+    # ------------------------------------------------------------------
+
+    def _on_li_scan(self) -> None:
+        if self._li_discovery is None:
+            self._status_bar.showMessage("Li-Control: discovery unavailable")
+            return
+        self._li_discovery.start(5.0)
+        self._status_bar.showMessage("Li-Control: scanning…")
+
+    def _on_li_host_found(self, name: str, ip: str) -> None:
+        if self._li_panel is not None:
+            self._li_panel.add_discovered_host(name, ip)
+
+    def _on_li_discovery_finished(self, count: int) -> None:
+        if count == 0:
+            self._status_bar.showMessage(
+                "No LI-6800 found — check firewall or type hostname manually"
+            )
+        else:
+            self._status_bar.showMessage(f"Li-Control: found {count} host(s)")
+
+    # ------------------------------------------------------------------
+    # Li-Control: SSH session slots
+    # ------------------------------------------------------------------
+
+    def _on_li_connect(self, cfg) -> None:
+        if self._li_worker is not None and self._li_worker.isRunning():
+            return
+        try:
+            from li_worker import LiWorker
+        except ImportError:
+            self._status_bar.showMessage(
+                "Install paramiko (pip install paramiko>=3.4) to use Li-Control"
+            )
+            return
+
+        # Accept "host  [ip]" format from discovered entries.
+        host = cfg.host
+        if "[" in host and host.endswith("]"):
+            host = host.split("[", 1)[1].rstrip("]").strip() or host
+            cfg.host = host
+
+        if self._li_worker is None:
+            self._li_worker = LiWorker(self)
+            self._li_worker.connected.connect(self._on_li_connected)
+            self._li_worker.disconnected.connect(self._on_li_disconnected)
+            self._li_worker.ack_received.connect(self._on_li_ack)
+            self._li_worker.error_received.connect(self._on_li_error)
+        self._li_worker.open_connection(cfg)
+        self._status_bar.showMessage(f"Li-Control: connecting to {cfg.host}…")
+
+    def _on_li_disconnect(self) -> None:
+        if self._li_worker is not None and self._li_worker.isRunning():
+            self._li_worker.close_connection()
+
+    def _on_li_connected(self, host: str) -> None:
+        if self._li_panel is not None:
+            self._li_panel.on_connected(host)
+        self._status_bar.showMessage(f"Li-Control connected: {host}")
+
+    def _on_li_disconnected(self) -> None:
+        if self._li_panel is not None:
+            self._li_panel.on_disconnected()
+        self._status_bar.showMessage("Li-Control disconnected")
+
+    def _on_li_send(self, sp) -> None:
+        if self._li_worker is None or not self._li_worker.isRunning():
+            self._status_bar.showMessage("Li-Control: not connected")
+            return
+        self._last_manual_cmd_id = self._li_worker.send_setpoints(sp)
+
+    def _on_li_stop(self) -> None:
+        if self._li_worker is None or not self._li_worker.isRunning():
+            return
+        self._li_worker.send_stop()
+
+    def _on_li_ack(self, ack: dict) -> None:
+        if self._li_panel is not None:
+            self._li_panel.on_ack_received(ack)
+        # Manual-row logging gates on cmd_id match only.
+        if (
+            self._li_recorder is not None
+            and self._li_recorder.is_recording
+            and self._last_manual_cmd_id is not None
+            and ack.get("cmd_id") == self._last_manual_cmd_id
+        ):
+            spec = self._last_spec
+            bme = self._last_bme
+            if self._worker is None or not self._worker.isRunning():
+                notes = "manual_send,spec_unavailable"
+                spec = None
+                bme = None
+            elif self._acq_timer.isActive():
+                notes = "manual_send,spec_age<=1_acq_interval"
+            else:
+                notes = "manual_send"
+            sp_dict = {
+                "co2_r": None, "tair": None, "rh_air": None, "qin": None,
+            }
+            self._li_recorder.write_row(
+                step_index=-1,
+                step_name="manual",
+                setpoints=sp_dict,
+                ack=ack,
+                spec=spec,
+                bme=bme,
+                notes=notes,
+            )
+            self._last_manual_cmd_id = None
+
+    def _on_li_error(self, msg: str) -> None:
+        self._status_bar.showMessage(f"Li-Control: {msg}")
+
+    # ------------------------------------------------------------------
+    # Li-Control: sequence slots
+    # ------------------------------------------------------------------
+
+    def _on_li_load_sequence(self, path: str) -> None:
+        try:
+            from li_sequence import load_sequence
+            steps = load_sequence(path)
+        except Exception as exc:
+            self._status_bar.showMessage(f"Sequence load failed: {exc}")
+            return
+        if self._li_panel is not None:
+            self._li_panel.set_steps(steps)
+        self._status_bar.showMessage(
+            f"Loaded sequence: {len(steps)} step(s) from {Path(path).name}"
+        )
+
+    def _on_li_sequence_start(self) -> None:
+        if self._li_worker is None or not self._li_worker.isRunning():
+            self._status_bar.showMessage("Li-Control: connect the LI-6800 first")
+            return
+        if self._li_panel is None or not self._li_panel._steps:
+            self._status_bar.showMessage("Li-Control: load a sequence first")
+            return
+
+        from li_sequence import SequenceRunner
+        from li_recorder import LiRecorder
+
+        # Clean up previous runner if any
+        if self._li_runner is not None:
+            try:
+                self._li_runner.finished.disconnect()
+                self._li_runner.aborted.disconnect()
+                self._li_runner.step_started.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._li_runner.deleteLater()
+            self._li_runner = None
+
+        # Choose spec channels (empty when spectrometer never connected)
+        if self._worker is not None and self._worker.isRunning():
+            spec_channels = protocol.channels_for_model(self._model)
+        else:
+            spec_channels = []
+
+        self._li_recorder = LiRecorder(self._base_dir / "data")
+        try:
+            path = self._li_recorder.start_recording(
+                filename="DATA",
+                model=self._model,
+                mode=("flash" if self._mode_flash.isChecked() else "ambient"),
+                gain=self._gain,
+                atime=self._atime_spin.value(),
+                astep=self._astep_spin.value(),
+                led=self._led_spin.value(),
+                spec_channels=spec_channels,
+            )
+        except OSError as exc:
+            self._status_bar.showMessage(f"Li recorder open failed: {exc}")
+            return
+
+        # Pause the main acquisition timer for the duration of the sequence.
+        self._acq_was_running = self._acq_timer.isActive()
+        if self._acq_was_running:
+            self._acq_timer.stop()
+
+        self._li_runner = SequenceRunner(self._li_worker, self, parent=self)
+        self._li_runner.step_started.connect(self._on_li_step_started)
+        self._li_runner.finished.connect(self._on_li_sequence_finished)
+        self._li_runner.aborted.connect(self._on_li_sequence_aborted)
+
+        self._li_panel.on_sequence_started()
+        self._li_runner.start(self._li_panel._steps, self._li_recorder)
+        self._status_bar.showMessage(
+            f"Li-Control sequence running → {Path(path).name}"
+        )
+
+    def _on_li_step_started(self, index: int, step) -> None:
+        if self._li_panel is not None:
+            self._li_panel.set_progress(index)
+        self._status_bar.showMessage(
+            f"Li-Control step {index + 1}: {getattr(step, 'name', '')}"
+        )
+
+    def _on_li_sequence_abort(self) -> None:
+        if self._li_runner is not None:
+            self._li_runner.abort()
+
+    def _on_li_sequence_finished(self) -> None:
+        self._end_li_sequence("Li-Control sequence finished")
+
+    def _on_li_sequence_aborted(self, reason: str) -> None:
+        self._end_li_sequence(f"Li-Control sequence aborted: {reason}")
+
+    def _end_li_sequence(self, message: str) -> None:
+        if self._li_recorder is not None:
+            self._li_recorder.stop_recording()
+        if self._acq_was_running:
+            interval_ms = INTERVALS[self._interval_combo.currentIndex()][1] * 1000
+            self._acq_timer.start(interval_ms)
+        self._acq_was_running = False
+        if self._li_panel is not None:
+            self._li_panel.on_sequence_ended()
+        self._status_bar.showMessage(message)
+
+    # ------------------------------------------------------------------
     # Close
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):
         if self._recorder.is_recording:
             self._recorder.stop_recording()
+        if self._li_runner is not None:
+            try:
+                self._li_runner.abort()
+            except Exception:
+                pass
+        if self._li_discovery is not None:
+            try:
+                self._li_discovery.stop()
+            except Exception:
+                pass
+        if self._li_worker is not None and self._li_worker.isRunning():
+            try:
+                self._li_worker.close_connection()
+            except Exception:
+                pass
+        if self._li_recorder is not None and self._li_recorder.is_recording:
+            self._li_recorder.stop_recording()
         if self._worker and self._worker.isRunning():
             self._worker.close_port()
         super().closeEvent(event)

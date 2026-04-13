@@ -29,3 +29,6 @@ rad.json
 #Test results file
 TestResults.xml
 >>>>>>> fd04ca9394161db7b3aa9b9f11af5ca195762de9
+
+# Li-Control local config (dev mode; frozen-build path is outside the repo)
+gui/gui_config.json
