@@ -32,6 +32,7 @@ class SequenceStep:
     setpoints: LiSetpoints
     ack_timeout_s: float | None = None
     post_wait_s: float = 0.0
+    repeat: int = 1   # number of times the step is executed back-to-back
 
 
 def validate_sequence(raw: Any) -> list[str]:
@@ -71,7 +72,51 @@ def validate_sequence(raw: Any) -> list[str]:
                     errors.append(f"{prefix}: post_wait_s must be >= 0")
             except (TypeError, ValueError):
                 errors.append(f"{prefix}: post_wait_s must be numeric")
+        if "repeat" in step:
+            try:
+                r = int(step["repeat"])
+                if r < 1:
+                    errors.append(f"{prefix}: repeat must be >= 1")
+            except (TypeError, ValueError):
+                errors.append(f"{prefix}: repeat must be an integer")
     return errors
+
+
+def step_to_dict(step: SequenceStep) -> dict:
+    """Inverse of the per-step parsing in load_sequence."""
+    sp = step.setpoints
+    sp_out: dict[str, Any] = {}
+    for field_name in LI_SETPOINT_FIELDS:
+        val = getattr(sp, field_name)
+        if field_name in ("wait_for_co2", "log"):
+            sp_out[field_name] = bool(val)
+            continue
+        if field_name in ("co2_tol", "wait_s"):
+            # Always emit these so round-trips stay stable.
+            sp_out[field_name] = float(val)
+            continue
+        if val is not None:
+            sp_out[field_name] = float(val)
+    out: dict[str, Any] = {"name": step.name, "setpoints": sp_out}
+    if step.ack_timeout_s is not None:
+        out["ack_timeout_s"] = float(step.ack_timeout_s)
+    if step.post_wait_s:
+        out["post_wait_s"] = float(step.post_wait_s)
+    if step.repeat and step.repeat != 1:
+        out["repeat"] = int(step.repeat)
+    return out
+
+
+def save_sequence(steps: list[SequenceStep], path: Path | str, *, name: str = "") -> Path:
+    """Write steps back to JSON. Raises OSError on I/O failure."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "name": name or p.stem,
+        "steps": [step_to_dict(s) for s in steps],
+    }
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return p
 
 
 def load_sequence(path: Path | str) -> list[SequenceStep]:
@@ -97,15 +142,17 @@ def load_sequence(path: Path | str) -> list[SequenceStep]:
             setpoints=sp,
             ack_timeout_s=(float(entry["ack_timeout_s"]) if "ack_timeout_s" in entry else None),
             post_wait_s=float(entry.get("post_wait_s", 0.0)),
+            repeat=int(entry.get("repeat", 1)),
         ))
     return steps
 
 
 class SequenceRunner(QObject):
-    step_started  = Signal(int, object)    # index, SequenceStep
-    step_finished = Signal(int, dict)      # index, ack
-    finished      = Signal()
-    aborted       = Signal(str)            # reason
+    step_started       = Signal(int, object)       # base step index, SequenceStep (fires once per step)
+    repetition_started = Signal(int, int, int)     # step_idx, rep_idx, total_reps (fires every repetition)
+    step_finished      = Signal(int, dict)         # base step index, ack
+    finished           = Signal()
+    aborted            = Signal(str)               # reason
 
     def __init__(self, li_worker: "LiWorker", main_window, parent: QObject | None = None):
         super().__init__(parent or main_window)
@@ -114,6 +161,7 @@ class SequenceRunner(QObject):
         self._steps: list[SequenceStep] = []
         self._recorder = None
         self._idx = -1
+        self._rep_idx = 0
         self._running = False
         self._aborting = False
         self._expected_cmd_id: str | None = None
@@ -133,6 +181,7 @@ class SequenceRunner(QObject):
         self._steps = list(steps)
         self._recorder = recorder
         self._idx = -1
+        self._rep_idx = 0
         self._running = True
         self._aborting = False
         self._advance()
@@ -154,13 +203,31 @@ class SequenceRunner(QObject):
         if self._aborting:
             self._finish_aborted("user")
             return
+
+        # Still inside a repeating step?
+        if 0 <= self._idx < len(self._steps):
+            cur = self._steps[self._idx]
+            reps = max(1, int(cur.repeat or 1))
+            if self._rep_idx + 1 < reps:
+                self._rep_idx += 1
+                self._start_current()
+                return
+
+        # Move on to the next base step.
         self._idx += 1
+        self._rep_idx = 0
         if self._idx >= len(self._steps):
             self._running = False
             self.finished.emit()
             return
         step = self._steps[self._idx]
         self.step_started.emit(self._idx, step)
+        self._start_current()
+
+    def _start_current(self) -> None:
+        step = self._steps[self._idx]
+        reps = max(1, int(step.repeat or 1))
+        self.repetition_started.emit(self._idx, self._rep_idx, reps)
         try:
             self._expected_cmd_id = self._li.send_setpoints(
                 step.setpoints, timeout_s=step.ack_timeout_s
@@ -281,6 +348,7 @@ class SequenceRunner(QObject):
         self._recorder.write_row(
             step_index=self._idx,
             step_name=step_name,
+            repeat_index=self._rep_idx,
             setpoints=setpoint_dict,
             ack=ack,
             spec=spec,

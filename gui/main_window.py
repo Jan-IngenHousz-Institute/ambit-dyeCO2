@@ -902,6 +902,7 @@ class MainWindow(QMainWindow):
         panel.stop_requested.connect(self._on_li_stop)
         panel.scan_requested.connect(self._on_li_scan)
         panel.sequence_load_requested.connect(self._on_li_load_sequence)
+        panel.sequence_edit_requested.connect(self._on_li_sequence_edit)
         panel.sequence_start.connect(self._on_li_sequence_start)
         panel.sequence_abort.connect(self._on_li_sequence_abort)
 
@@ -1060,6 +1061,24 @@ class MainWindow(QMainWindow):
             f"Loaded sequence: {len(steps)} step(s) from {Path(path).name}"
         )
 
+    def _on_li_sequence_edit(self) -> None:
+        try:
+            from li_sequence_editor import SequenceEditorDialog
+        except Exception as exc:
+            self._status_bar.showMessage(f"Sequence builder unavailable: {exc}")
+            return
+        sequences_dir = self._base_dir / "sequences"
+        initial = list(self._li_panel._steps) if self._li_panel is not None else []
+        dlg = SequenceEditorDialog(
+            steps=initial, default_dir=sequences_dir, parent=self
+        )
+        if dlg.exec() and self._li_panel is not None:
+            steps = dlg.result_steps()
+            self._li_panel.set_steps(steps)
+            self._status_bar.showMessage(
+                f"Sequence builder: {len(steps)} step(s) ready to run"
+            )
+
     def _on_li_sequence_start(self) -> None:
         if self._li_worker is None or not self._li_worker.isRunning():
             self._status_bar.showMessage("Li-Control: connect the LI-6800 first")
@@ -1077,6 +1096,7 @@ class MainWindow(QMainWindow):
                 self._li_runner.finished.disconnect()
                 self._li_runner.aborted.disconnect()
                 self._li_runner.step_started.disconnect()
+                self._li_runner.repetition_started.disconnect()
             except (RuntimeError, TypeError):
                 pass
             self._li_runner.deleteLater()
@@ -1111,6 +1131,7 @@ class MainWindow(QMainWindow):
 
         self._li_runner = SequenceRunner(self._li_worker, self, parent=self)
         self._li_runner.step_started.connect(self._on_li_step_started)
+        self._li_runner.repetition_started.connect(self._on_li_repetition_started)
         self._li_runner.finished.connect(self._on_li_sequence_finished)
         self._li_runner.aborted.connect(self._on_li_sequence_aborted)
 
@@ -1121,11 +1142,18 @@ class MainWindow(QMainWindow):
         )
 
     def _on_li_step_started(self, index: int, step) -> None:
-        if self._li_panel is not None:
-            self._li_panel.set_progress(index)
+        # Repetition_started fires next and updates the panel progress label.
         self._status_bar.showMessage(
             f"Li-Control step {index + 1}: {getattr(step, 'name', '')}"
         )
+
+    def _on_li_repetition_started(self, step_idx: int, rep_idx: int, total_reps: int) -> None:
+        if self._li_panel is not None:
+            self._li_panel.set_progress(step_idx, rep_idx, total_reps)
+        if total_reps > 1:
+            self._status_bar.showMessage(
+                f"Li-Control step {step_idx + 1} rep {rep_idx + 1}/{total_reps}"
+            )
 
     def _on_li_sequence_abort(self) -> None:
         if self._li_runner is not None:

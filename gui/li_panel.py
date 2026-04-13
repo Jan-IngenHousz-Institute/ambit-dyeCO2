@@ -38,6 +38,7 @@ class LiControlPanel(QGroupBox):
     setpoints_requested  = Signal(object)   # LiSetpoints
     stop_requested       = Signal()
     sequence_load_requested = Signal(str)   # path
+    sequence_edit_requested = Signal()      # open the form-based editor
     sequence_start       = Signal()
     sequence_abort       = Signal()
 
@@ -213,9 +214,16 @@ class LiControlPanel(QGroupBox):
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        self._load_btn = QPushButton("Load sequence…")
+        io_row = QWidget()
+        io_h = QHBoxLayout(io_row)
+        io_h.setContentsMargins(0, 0, 0, 0)
+        self._load_btn = QPushButton("Load…")
         self._load_btn.clicked.connect(self._on_load_clicked)
-        layout.addWidget(self._load_btn)
+        self._build_btn = QPushButton("Build…")
+        self._build_btn.clicked.connect(self.sequence_edit_requested.emit)
+        io_h.addWidget(self._load_btn)
+        io_h.addWidget(self._build_btn)
+        layout.addWidget(io_row)
 
         self._steps_list = QListWidget()
         self._steps_list.setMaximumHeight(120)
@@ -313,8 +321,11 @@ class LiControlPanel(QGroupBox):
         self._progress_lbl.setText(f"step 0 / {len(steps)}")
         self._refresh_enabled()
 
-    def set_progress(self, index: int) -> None:
-        self._progress_lbl.setText(f"step {index + 1} / {len(self._steps)}")
+    def set_progress(self, step_idx: int, rep_idx: int = 0, total_reps: int = 1) -> None:
+        base = f"step {step_idx + 1} / {len(self._steps)}"
+        if total_reps > 1:
+            base += f"  (rep {rep_idx + 1}/{total_reps})"
+        self._progress_lbl.setText(base)
 
     def on_connected(self, host: str) -> None:
         self._connected = True
@@ -363,3 +374,4 @@ class LiControlPanel(QGroupBox):
             self._connected and not self._sequence_running and len(self._steps) > 0
         )
         self._load_btn.setEnabled(not self._sequence_running)
+        self._build_btn.setEnabled(not self._sequence_running)

@@ -59,7 +59,7 @@ class LiRecorder:
 
         try:
             self._file = open(path, "w", encoding="utf-8", newline="\n")
-            cols: list[str] = ["timestamp", "step_index", "step_name"]
+            cols: list[str] = ["timestamp", "step_index", "step_name", "repeat_index"]
             cols.extend(_SETPOINT_COLS)
             cols.extend(_LI_ACK_COLS)
             cols.extend(self._spec_channels)
@@ -87,6 +87,7 @@ class LiRecorder:
         spec: dict | None,
         bme: dict | None,
         notes: str = "",
+        repeat_index: int = 0,
     ) -> None:
         if not self._recording or self._file is None:
             return
@@ -115,6 +116,7 @@ class LiRecorder:
             timestamp,
             str(step_index),
             step_name,
+            str(repeat_index),
         ]
         row.extend(setpoint_vals)
         row.extend(ack_vals)
