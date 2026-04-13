@@ -1,0 +1,50 @@
+name: Build GUI Executables
+
+on:
+  workflow_dispatch:       # manual trigger from GitHub UI
+  push:
+    tags:
+      - 'v*'              # auto-trigger on version tags (v1.0.0, etc.)
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: AmbitDyeCO2-Windows
+            ext: .exe
+          - os: macos-latest
+            artifact: AmbitDyeCO2-macOS
+            ext: ""
+          - os: ubuntu-latest
+            artifact: AmbitDyeCO2-Linux
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install -r gui/requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: >
+          pyinstaller --onefile --windowed
+          --name AmbitDyeCO2
+          --hidden-import=pyqtgraph
+          --hidden-import=serial.tools.list_ports
+          gui/main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/AmbitDyeCO2${{ matrix.ext }}
