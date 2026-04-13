@@ -2,6 +2,7 @@
 main_window.py — QMainWindow for the ambit dyeCO2 controller GUI.
 """
 
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -107,7 +108,12 @@ class MainWindow(QMainWindow):
         self._worker: SerialWorker | None = None
         self._spec_buffer = SpecBuffer()
         self._bme_buffer = BmeBuffer()
-        self._recorder = Recorder(Path(__file__).parent / "data")
+        # When frozen by PyInstaller, save next to the .exe; otherwise next to this .py
+        if getattr(sys, "frozen", False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent
+        self._recorder = Recorder(base_dir / "data")
         self._model = "AS7341"        # updated on status
         self._running = False         # acquisition running
         self._acq_timer = QTimer(self)
