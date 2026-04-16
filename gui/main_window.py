@@ -628,7 +628,7 @@ class MainWindow(QMainWindow):
         # Send env first so BME data arrives before spec (fixes data alignment)
         self._worker.send_command(protocol.CMD_ENV)
         if self._mode_flash.isChecked():
-            self._worker.send_command(protocol.CMD_SPEC_FLASH)
+            self._worker.send_command(protocol.cmd_spec_flash(self._led_spin.value()))
         else:
             self._worker.send_command(protocol.CMD_SPEC)
 

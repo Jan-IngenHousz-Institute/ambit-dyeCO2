@@ -16,6 +16,10 @@ CMD_HELLO = "hello"
 CMD_STATUS = "status"
 CMD_SPEC = "spec"
 CMD_SPEC_FLASH = "spec_flash"
+
+
+def cmd_spec_flash(led_current: int) -> str:
+    return f"spec_flash,{led_current}"
 CMD_ENV = "env"
 
 

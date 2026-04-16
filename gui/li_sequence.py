@@ -259,9 +259,12 @@ class SequenceRunner(QObject):
             worker.send_command(protocol.CMD_ENV)
             mode_flash = bool(getattr(self._main, "_mode_flash", None) and
                               self._main._mode_flash.isChecked())
-            worker.send_command(
-                protocol.CMD_SPEC_FLASH if mode_flash else protocol.CMD_SPEC
-            )
+            if mode_flash:
+                led_ma = getattr(self._main, "_led_spin", None)
+                led_val = led_ma.value() if led_ma is not None else 10
+                worker.send_command(protocol.cmd_spec_flash(led_val))
+            else:
+                worker.send_command(protocol.CMD_SPEC)
         except Exception:
             self._disarm_spec_wait()
             self._write_row_with(ack, spec=None, bme=None, notes="spec_unavailable")
